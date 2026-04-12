@@ -339,7 +339,7 @@ def run_daily(
         stop_loss_pct=0.0, use_volume_filter=False, use_regime_gate=True,
         earnings_buffer_days=3, min_price=20.0, max_price=500.0,
     )
-    cfg = dataclasses.replace(TradingConfig(), **V1_OVERRIDES)
+    cfg = dataclasses.replace(TradingConfig.from_env(), **V1_OVERRIDES)
 
     # ── 6. Exit signals ────────────────────────────────────────────────────
     actions: list[dict] = []
