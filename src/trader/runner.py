@@ -216,6 +216,7 @@ def run_daily(
     from trader.execution.order_manager import OrderManager
     from trader.notifications import write_daily_report
     from trader.risk.kill_switches import KillSwitches, KillSwitchTripped
+    from trader.risk.sizing import compute_available_capital, compute_position_notional
     import dataclasses
 
     today = date.today()
@@ -395,16 +396,16 @@ def run_daily(
         # Determine how many new positions we can open
         current_positions = len(held_tickers)
         max_new = cfg.max_positions - current_positions
-        cash_available = account.cash - (account.portfolio_value * cfg.cash_floor_pct)
-        position_size = account.portfolio_value * cfg.target_position_pct
+        cash_available = compute_available_capital(account.portfolio_value, account.cash, cfg)
 
         logger.info(
-            "Cash available: $%.2f | Position size: $%.2f | Can open %d new positions",
-            cash_available, position_size, max_new,
+            "Cash available (after floor): $%.2f | Can open %d new positions",
+            cash_available, max_new,
         )
 
         for ticker in ranked[:max_new]:
-            if cash_available < position_size * 0.5:
+            notional = compute_position_notional(account.portfolio_value, cash_available, cfg)
+            if notional <= 0:
                 logger.info("Insufficient cash for more entries — stopping at %d", orders_placed)
                 break
 
@@ -413,23 +414,24 @@ def run_daily(
                 action="entry",
                 reason="momentum_breakout",
                 portfolio_value=account.portfolio_value,
-                notional=position_size,
+                notional=notional,
                 dry_run=dry_run,
             )
 
             try:
                 order = order_mgr.place_entry_order(
                     symbol=ticker,
-                    notional=position_size,
+                    notional=notional,
                     dry_run=dry_run,
                 )
-                if order and not dry_run:
-                    orders_placed += 1
-                    cash_available -= position_size
+                # Always deduct from cash_available (including dry-run) so each
+                # iteration sees the correct remaining capital.
+                orders_placed += 1
+                cash_available -= notional
                 actions.append({
                     "action": "entry",
                     "ticker": ticker,
-                    "reason": f"momentum breakout — notional=${position_size:,.2f}",
+                    "reason": f"momentum breakout — notional=${notional:,.2f}",
                     "dry_run": dry_run,
                 })
             except Exception as exc:
