@@ -65,6 +65,14 @@ class TradingConfig:
     use_volume_filter: bool = True
     use_regime_gate: bool = True
 
+    # ── Momentum / v1.0 Parameters ───────────────────────────────────────────
+    breakout_lookback: int = 126          # bars for new N-day high (6 months)
+    trend_sma_short: int = 50             # short-trend SMA (golden cross + trailing exit)
+    relative_strength_lookback: int = 63  # bars for RS calc (3 months)
+    relative_strength_min_outperformance: float = 0.05  # min stock return - SPY return
+    trailing_sma_days: int = 50           # trailing SMA exit period
+    hard_stop_pct: float = 0.08           # hard stop below entry price
+
     # ── Costs ─────────────────────────────────────────────────────────────────
     commission: float = 0.0
     slippage_bps: float = 5.0  # per side
@@ -125,4 +133,10 @@ class TradingConfig:
             wf_step_months=_env_int("WF_STEP_MONTHS", 3),
             data_dir=Path(_env_str("DATA_DIR", "data")),
             outputs_dir=Path(_env_str("OUTPUTS_DIR", "outputs")),
+            breakout_lookback=_env_int("BREAKOUT_LOOKBACK", 126),
+            trend_sma_short=_env_int("TREND_SMA_SHORT", 50),
+            relative_strength_lookback=_env_int("RELATIVE_STRENGTH_LOOKBACK", 63),
+            relative_strength_min_outperformance=_env_float("RELATIVE_STRENGTH_MIN_OUTPERFORMANCE", 0.05),
+            trailing_sma_days=_env_int("TRAILING_SMA_DAYS", 50),
+            hard_stop_pct=_env_float("HARD_STOP_PCT", 0.08),
         )
