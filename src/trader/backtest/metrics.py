@@ -78,13 +78,29 @@ def compute_trade_stats(trades: pd.DataFrame) -> dict:
     wins = rets[rets > 0]
     losses = rets[rets < 0]
 
+    # Compute avg hold: from explicit Duration col, or from timestamp diff
+    avg_hold = float("nan")
     hold_col = None
     for c in ["Duration", "duration", "Bars Held", "bars_held"]:
         if c in trades.columns:
             hold_col = c
             break
 
-    avg_hold = float(trades[hold_col].mean()) if hold_col else float("nan")
+    if hold_col:
+        raw = trades[hold_col]
+        # If timedelta, convert to days
+        if hasattr(raw.iloc[0], "days"):
+            avg_hold = float(raw.apply(lambda x: x.days if hasattr(x, "days") else float("nan")).mean())
+        else:
+            avg_hold = float(raw.mean())
+    elif "Entry Timestamp" in trades.columns and "Exit Timestamp" in trades.columns:
+        try:
+            entry_ts = pd.to_datetime(trades["Entry Timestamp"])
+            exit_ts = pd.to_datetime(trades["Exit Timestamp"])
+            hold_td = (exit_ts - entry_ts).dt.days
+            avg_hold = float(hold_td.mean())
+        except Exception:
+            pass
 
     return {
         "trade_count": len(trades),

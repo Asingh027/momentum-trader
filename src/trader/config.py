@@ -58,6 +58,12 @@ class TradingConfig:
     stop_loss_pct: float = 0.05
     time_stop_days: int = 10
     spy_trend_sma_period: int = 200
+    # RSI crossover exit: exit when RSI crosses ABOVE this level (0 = disabled)
+    rsi_exit_level: float = 0.0
+
+    # ── Signal Toggles ────────────────────────────────────────────────────────
+    use_volume_filter: bool = True
+    use_regime_gate: bool = True
 
     # ── Costs ─────────────────────────────────────────────────────────────────
     commission: float = 0.0

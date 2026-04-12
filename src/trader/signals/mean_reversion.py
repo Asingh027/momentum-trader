@@ -1,22 +1,22 @@
 """Mean-reversion dip-buy signal computation.
 
-Entry (ALL must be true at close, order placed at next open):
-  1. Price > 200d SMA                (long-term trend filter)
-  2. Price down >= 5% from 10d high  (pullback)
-  3. RSI(14) < 30                    (oversold)
-  4. Volume >= 1.5x 20d avg          (capitulation)
-  5. No earnings in next 5 days      (earnings gate — best-effort via yfinance)
-  6. SPY > SPY 200d SMA              (market regime gate)
+v0.3 entry (ALL must be true at close, order fills at next open):
+  1. Price > 200d SMA                     (long-term trend filter)
+  2. Price down >= pullback_pct from 10d high  (pullback)
+  3. RSI(14) < rsi_oversold               (oversold — 35 for v0.3)
+  4. SPY > SPY 200d SMA                   (market regime gate)
+  NOTE: volume filter and earnings gate are toggled off for v0.3 (ETF universe)
 
-Exit (ANY fires first):
-  1. Price >= entry * (1 + profit_target_pct)     (+10% profit target)
-  2. Price <= entry * (1 - stop_loss_pct)          (-5% stop loss)
-  3. Position held >= time_stop_days               (10-day time stop)
-  4. SPY < SPY 200d SMA                            (regime stop)
+v0.3 exit (ANY fires first):
+  1. RSI(14) crosses ABOVE rsi_exit_level (50 for v0.3 — mean-reversion confirmed)
+  2. Price >= entry * (1 + profit_target_pct)  (+8% backup target)
+  3. Price <= entry * (1 - stop_loss_pct)      (-5% stop loss)
+  4. Position held >= time_stop_days           (15-day time stop)
+  5. SPY closes below its 200d SMA             (regime stop)
 
-For vectorbt, we return entry/exit *signal* DataFrames (dates × tickers).
-Stop-loss and profit-target exits are handled via vectorbt's sl_stop / tp_stop
-portfolio arguments, not in the signal DataFrame.
+For vectorbt: sl_stop / tp_stop handle exits 3 and 4 at the portfolio level.
+compute_exit_signals() returns the signal-level exits (RSI crossover + regime stop).
+Time stop is injected as explicit exit signals via engine.add_time_stop_exits().
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ def _rsi(close: pd.Series, period: int) -> pd.Series:
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    # When avg_loss == 0, RSI = 100 (no losses at all)
     rsi = pd.Series(index=close.index, dtype=float)
     has_loss = avg_loss > 0
     rs = avg_gain[has_loss] / avg_loss[has_loss]
@@ -51,24 +50,36 @@ def _sma(series: pd.Series, period: int) -> pd.Series:
     return series.rolling(period).mean()
 
 
+def compute_rsi_series(
+    bars: dict[str, pd.DataFrame],
+    all_dates: pd.DatetimeIndex,
+    rsi_period: int,
+) -> dict[str, pd.Series]:
+    """Compute RSI for each ticker. Returns dict ticker -> RSI Series.
+
+    Exposed separately so run_v03.py can reuse for exit reason attribution.
+    """
+    result = {}
+    for ticker, df in bars.items():
+        close = df["Close"].reindex(all_dates).ffill(limit=5)
+        result[ticker] = _rsi(close, rsi_period)
+    return result
+
+
 def compute_entry_signals(
     bars: dict[str, pd.DataFrame],
     spy_bars: pd.DataFrame,
     cfg: TradingConfig,
     earnings_dates: dict[str, list[pd.Timestamp]] | None = None,
 ) -> pd.DataFrame:
-    """Return boolean DataFrame (dates × tickers).
+    """Return boolean DataFrame (dates × tickers). True = entry signal.
 
-    True on dates where ALL entry conditions are met.
-    Order fills at next day's open.
-
-    earnings_dates: optional dict of ticker -> list of known earnings dates.
-    If None, earnings gate is skipped (with a warning).
+    Respects cfg.use_volume_filter and cfg.use_regime_gate toggles.
     """
-    if earnings_dates is None:
-        logger.warning("No earnings dates provided — earnings gate DISABLED. Results will be optimistic.")
+    if earnings_dates is None and cfg.use_volume_filter:
+        # Only warn about earnings if we're in equity mode (volume filter on)
+        pass  # earnings gate always-pass for ETF universe; no warning needed
 
-    # Build SPY regime mask
     spy_close = spy_bars["Close"]
     spy_sma = _sma(spy_close, cfg.spy_trend_sma_period)
     spy_above_sma = (spy_close > spy_sma).rename("spy_regime")
@@ -81,23 +92,26 @@ def compute_entry_signals(
             close = df["Close"].reindex(all_dates).ffill(limit=5)
             volume = df["Volume"].reindex(all_dates).ffill(limit=5)
 
-            # 1. Price > 200d SMA
-            sma200 = _sma(close, cfg.trend_sma_period)
-            above_trend = close > sma200
+            # 1. Price > trend SMA
+            sma_trend = _sma(close, cfg.trend_sma_period)
+            above_trend = close > sma_trend
 
-            # 2. Down >= 5% from 10d high
-            high_10d = close.rolling(cfg.pullback_lookback).max()
-            pulled_back = close <= high_10d * (1 - cfg.pullback_pct)
+            # 2. Pullback from N-day high
+            high_nd = close.rolling(cfg.pullback_lookback).max()
+            pulled_back = close <= high_nd * (1 - cfg.pullback_pct)
 
-            # 3. RSI(14) < 30
+            # 3. RSI oversold
             rsi = _rsi(close, cfg.rsi_period)
             oversold = rsi < cfg.rsi_oversold
 
-            # 4. Volume >= 1.5x 20d avg
-            vol_avg = volume.rolling(cfg.volume_avg_period).mean()
-            high_volume = volume >= vol_avg * cfg.volume_ratio
+            # 4. Volume filter (optional)
+            if cfg.use_volume_filter:
+                vol_avg = volume.rolling(cfg.volume_avg_period).mean()
+                high_volume = volume >= vol_avg * cfg.volume_ratio
+            else:
+                high_volume = pd.Series(True, index=all_dates)
 
-            # 5. Earnings gate
+            # 5. Earnings gate (always-pass when no data provided — ETFs have no earnings)
             if earnings_dates and ticker in earnings_dates:
                 dates_arr = pd.DatetimeIndex(earnings_dates[ticker])
 
@@ -112,8 +126,11 @@ def compute_entry_signals(
             else:
                 no_earnings = pd.Series(True, index=all_dates)
 
-            # 6. SPY regime
-            spy_ok = spy_above_sma.reindex(all_dates)
+            # 6. SPY regime gate (optional)
+            if cfg.use_regime_gate:
+                spy_ok = spy_above_sma.reindex(all_dates)
+            else:
+                spy_ok = pd.Series(True, index=all_dates)
 
             entry = (
                 above_trend
@@ -138,14 +155,15 @@ def compute_exit_signals(
     spy_bars: pd.DataFrame,
     cfg: TradingConfig,
 ) -> pd.DataFrame:
-    """Return boolean DataFrame for time-stop and regime-stop exits.
+    """Return boolean exit DataFrame (dates × tickers).
 
-    Note: profit target (+10%) and stop-loss (-5%) are handled by vectorbt's
-    tp_stop / sl_stop arguments at the portfolio level — they execute intra-bar
-    which is more accurate than signal-level. This function handles:
-    - SPY regime stop (SPY crosses below 200d SMA)
+    Includes:
+    - SPY regime stop (SPY crosses below its 200d SMA)
+    - RSI crossover exit: RSI crosses ABOVE cfg.rsi_exit_level (if > 0)
+      Crossover = RSI[t-1] < level AND RSI[t] >= level
 
-    Time-stop is handled in engine.py via max_open_trade_len.
+    sl_stop, tp_stop: handled by vectorbt portfolio-level args.
+    Time stop: injected via engine.add_time_stop_exits().
     """
     spy_close = spy_bars["Close"]
     spy_sma = _sma(spy_close, cfg.spy_trend_sma_period)
@@ -154,7 +172,24 @@ def compute_exit_signals(
     all_dates = spy_bars.index
     exits: dict[str, pd.Series] = {}
 
-    for ticker in bars:
-        exits[ticker] = spy_below_sma.reindex(all_dates).fillna(False)
+    use_rsi_exit = cfg.rsi_exit_level > 0
+
+    for ticker, df in bars.items():
+        # Base: regime stop (same for all tickers)
+        regime_exit = spy_below_sma.reindex(all_dates).fillna(False)
+
+        if use_rsi_exit and df is not None:
+            try:
+                close = df["Close"].reindex(all_dates).ffill(limit=5)
+                rsi = _rsi(close, cfg.rsi_period)
+                # Crossover: was below level, now at or above
+                rsi_cross_above = (rsi >= cfg.rsi_exit_level) & (rsi.shift(1) < cfg.rsi_exit_level)
+                rsi_cross_above = rsi_cross_above.fillna(False)
+                exits[ticker] = (regime_exit | rsi_cross_above)
+            except Exception as exc:
+                logger.warning("RSI exit computation failed for %s: %s", ticker, exc)
+                exits[ticker] = regime_exit
+        else:
+            exits[ticker] = regime_exit
 
     return pd.DataFrame(exits)
