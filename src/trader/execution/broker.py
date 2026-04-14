@@ -104,3 +104,10 @@ class BrokerProtocol(ABC):
     @abstractmethod
     def get_latest_quote(self, symbol: str) -> Optional[float]:
         """Return the latest trade price for a symbol."""
+
+    @abstractmethod
+    def get_latest_quotes(self, symbols: list[str]) -> dict[str, float]:
+        """Return latest trade prices for multiple symbols in one API call.
+
+        Returns dict of symbol -> price. Missing symbols are omitted.
+        """
