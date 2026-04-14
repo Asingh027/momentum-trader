@@ -2,12 +2,17 @@
 """Live trading CLI entry point.
 
 Usage:
-    uv run python scripts/run_trading.py               # full daily run
-    uv run python scripts/run_trading.py --dry-run     # signals only, no orders placed
-    uv run python scripts/run_trading.py --status      # print account + positions, exit
+    uv run python scripts/run_trading.py                    # full daily run (4:30 PM ET)
+    uv run python scripts/run_trading.py --dry-run          # signals only, no orders placed
+    uv run python scripts/run_trading.py --status           # print account + positions, exit
+    uv run python scripts/run_trading.py --monitor-only     # intraday risk check (hourly)
+    uv run python scripts/run_trading.py --monitor-only --dry-run  # monitor without orders
 
-The --dry-run flag is critical for the first paper week. Use it to verify
-what the bot WOULD do before enabling live order placement.
+Modes:
+    (default)        Full EOD run: exits + entries, daily report written.
+    --monitor-only   Risk-only: checks hard stops and regime gate on open positions.
+                     Never originates entries. Silent if all positions are safe.
+    --status         Account snapshot only; exits immediately.
 
 Credentials are read from:
     C:\\Users\\Avneet\\Documents\\Trading Helper\\alpaca.env
@@ -47,6 +52,15 @@ def main() -> None:
         help="Print current account status and positions, then exit.",
     )
     parser.add_argument(
+        "--monitor-only", "--intraday",
+        action="store_true",
+        dest="monitor_only",
+        help=(
+            "Intraday risk-only mode. Checks hard stops and regime gate on open "
+            "positions. Never originates entries. Exits silently if all clear."
+        ),
+    )
+    parser.add_argument(
         "--env-file",
         type=Path,
         default=None,
@@ -54,13 +68,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    from trader.runner import run_daily
-
-    run_daily(
-        dry_run=args.dry_run,
-        env_path=args.env_file,
-        status_only=args.status,
-    )
+    if args.monitor_only:
+        from trader.monitor import run_intraday_monitor
+        run_intraday_monitor(dry_run=args.dry_run, env_path=args.env_file)
+    else:
+        from trader.runner import run_daily
+        run_daily(
+            dry_run=args.dry_run,
+            env_path=args.env_file,
+            status_only=args.status,
+        )
 
 
 if __name__ == "__main__":

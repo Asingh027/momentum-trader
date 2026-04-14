@@ -216,6 +216,15 @@ class AlpacaBroker(BrokerProtocol):
             return float(trades[symbol].price)
         return None
 
+    @_retry
+    def get_latest_quotes(self, symbols: list[str]) -> dict[str, float]:
+        """Batch latest-trade prices — one API call for all symbols."""
+        if not symbols:
+            return {}
+        req = StockLatestTradeRequest(symbol_or_symbols=symbols, feed=DataFeed.IEX)
+        trades = self._data.get_stock_latest_trade(req)
+        return {sym: float(t.price) for sym, t in trades.items()}
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
