@@ -79,6 +79,64 @@ All loaded from `.env` / environment variables. See `.env.example` for full list
 | Time stop | 10 trading days | Exit condition |
 | Slippage | 5 bps/side | Cost model |
 
+## Docker Deployment
+
+The trader runs as a containerized cron job alongside the health-mcp stack.
+See the [health-mcp repo](https://github.com/avneet/health-mcp) for the full
+`docker-compose.yml`.
+
+**What runs in the container:**
+
+| Schedule (ET)         | Command                                       |
+|-----------------------|-----------------------------------------------|
+| 4:30 PM Mon–Fri       | `run_trading.py` — full EOD run               |
+| 10:30–15:30 Mon–Fri   | `run_trading.py --monitor-only` — intraday    |
+
+**Required files on the host** (mounted at `/data` inside the container):
+
+| File / dir                     | Purpose                         |
+|--------------------------------|---------------------------------|
+| `alpaca.env`                   | Alpaca API credentials          |
+| `trader.db`                    | SQLite decision log (auto-created) |
+| `daily_reports/`               | Markdown daily reports (auto-created) |
+| `task_logs/`                   | Cron job logs (auto-created)    |
+
+**Environment variables** (set in docker-compose, can also be used locally):
+
+| Variable          | Docker default        | Description                        |
+|-------------------|-----------------------|------------------------------------|
+| `ALPACA_ENV_PATH` | `/data/alpaca.env`    | Path to Alpaca credentials file    |
+| `DB_PATH`         | `/data/trader.db`     | Path to SQLite decision log        |
+| `REPORTS_DIR`     | `/data/daily_reports` | Directory for markdown reports     |
+
+**Build and run (from the health-mcp repo):**
+
+```bash
+docker compose up -d --build trader
+docker compose logs -f trader
+
+# Manual trigger (dry-run — no orders)
+docker compose exec trader uv run python scripts/run_trading.py --dry-run
+
+# Account status check
+docker compose exec trader uv run python scripts/run_trading.py --status
+
+# Verify timezone is ET
+docker compose exec trader date
+```
+
+**Task Scheduler cleanup** — once Docker is verified, remove the old scheduled tasks:
+
+```powershell
+schtasks /Delete /TN "TraderEOD" /F
+schtasks /Delete /TN "TraderMonitor_1030" /F
+schtasks /Delete /TN "TraderMonitor_1130" /F
+schtasks /Delete /TN "TraderMonitor_1230" /F
+schtasks /Delete /TN "TraderMonitor_1330" /F
+schtasks /Delete /TN "TraderMonitor_1430" /F
+schtasks /Delete /TN "TraderMonitor_1530" /F
+```
+
 ## Running Tests
 
 ```bash
