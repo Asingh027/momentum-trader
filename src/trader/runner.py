@@ -18,6 +18,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -50,7 +51,8 @@ BACKTEST_UNIVERSE = [
 
 def load_credentials(env_path: Optional[Path] = None) -> dict[str, str]:
     """Load Alpaca credentials from the env file. Never commit this file."""
-    default = Path(r"C:\Users\Avneet\Documents\Trading Helper\alpaca.env")
+    _env_var = os.environ.get("ALPACA_ENV_PATH", "")
+    default = Path(_env_var) if _env_var.strip() else Path(r"C:\Users\Avneet\Documents\Trading Helper\alpaca.env")
     path = env_path or default
     if not path.exists():
         raise FileNotFoundError(

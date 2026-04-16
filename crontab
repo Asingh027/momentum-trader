@@ -1,0 +1,9 @@
+# Trader crontab — runs inside the Docker container via supercronic.
+# TZ=America/New_York is set in the Dockerfile, so all times below are ET.
+# % must be escaped as \% in crontab (standard cron convention).
+
+# EOD run — 4:30 PM ET weekdays (exits + entries, writes daily report)
+30 16 * * 1-5 mkdir -p /data/task_logs && cd /app && uv run python scripts/run_trading.py >> /data/task_logs/eod_$(date +\%Y\%m\%d).log 2>&1
+
+# Intraday monitor — hourly 10:30–15:30 ET weekdays (hard stops + regime gate only, no entries)
+30 10-15 * * 1-5 mkdir -p /data/task_logs && cd /app && uv run python scripts/run_trading.py --monitor-only >> /data/task_logs/monitor_$(date +\%Y\%m\%d_\%H\%M).log 2>&1

@@ -6,7 +6,7 @@ Tables:
   trades         — completed round-trip trade records
 
 Default path: C:\\Users\\Avneet\\Documents\\Trading Helper\\trader.db
-Override via DB_PATH environment variable.
+Override via TRADER_DB_PATH environment variable (DB_PATH accepted as fallback).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ _DEFAULT_DB_PATH = Path(r"C:\Users\Avneet\Documents\Trading Helper\trader.db")
 
 
 def get_db_path() -> Path:
-    env = os.environ.get("DB_PATH", "")
+    env = os.environ.get("TRADER_DB_PATH", "") or os.environ.get("DB_PATH", "")
     return Path(env) if env.strip() else _DEFAULT_DB_PATH
 
 

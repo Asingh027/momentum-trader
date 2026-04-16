@@ -1,0 +1,2 @@
+# Dockerfiles require LF line endings inside containers
+Dockerfile text eol=lf
