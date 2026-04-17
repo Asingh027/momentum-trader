@@ -135,8 +135,7 @@ class KillSwitches:
             return False  # Outside market hours — don't fire
 
         if last_data_ts is None:
-            logger.warning("KILL SWITCH: stale data — no data timestamp available")
-            return True
+            return False  # No timestamp yet means data hasn't been fetched — not the same as stale
 
         # Normalise to UTC for comparison
         if last_data_ts.tzinfo is None:

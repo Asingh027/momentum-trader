@@ -131,14 +131,25 @@ def test_stale_data_outside_market_hours(ks):
 
 
 def test_stale_data_none_during_market_hours(ks):
-    """None timestamp during market hours should trip the guard."""
+    """None timestamp during market hours should NOT trip — data simply hasn't been fetched yet."""
     import pytz
     et = pytz.timezone("America/New_York")
     fake_now = datetime(2024, 1, 15, 14, 0, 0).replace(tzinfo=et)
     with patch("trader.risk.kill_switches.datetime") as mock_dt:
         mock_dt.now.return_value = fake_now
         result = ks.check_stale_data(None)
-    assert result is True
+    assert result is False
+
+
+def test_stale_data_none_timestamp_does_not_trip(ks):
+    """Passing None for last_data_ts never trips the stale-data guard regardless of time."""
+    import pytz
+    et = pytz.timezone("America/New_York")
+    # Mid-market hours
+    fake_now = datetime(2024, 1, 15, 11, 30, 0).replace(tzinfo=et)
+    with patch("trader.risk.kill_switches.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now
+        assert ks.check_stale_data(None) is False
 
 
 def test_stale_data_fresh(ks):
