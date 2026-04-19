@@ -18,6 +18,7 @@ dependencies = [
     "python-dateutil>=2.9",
     "alpaca-py>=0.38.0",
     "pytz>=2026.1.post1",
+    "lxml>=6.1.0",
 ]
 
 [project.optional-dependencies]
