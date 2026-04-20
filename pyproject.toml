@@ -19,6 +19,7 @@ dependencies = [
     "alpaca-py>=0.38.0",
     "pytz>=2026.1.post1",
     "lxml>=6.1.0",
+    "notify",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,9 @@ dev-dependencies = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+
+[tool.uv.sources]
+notify = { path = "../notify" }
 
 [tool.ruff]
 line-length = 100

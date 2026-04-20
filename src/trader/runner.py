@@ -26,6 +26,11 @@ from typing import Optional
 
 import pandas as pd
 
+try:
+    from notify import send as _notify
+except ImportError:
+    _notify = lambda *a, **kw: None  # noqa: E731
+
 logger = logging.getLogger(__name__)
 
 # Project root is two levels up from this file (src/trader/runner.py -> src/ -> project root)
@@ -285,6 +290,7 @@ def run_daily(
         # Continue to process exits even when kill switch is tripped
         # but block new entries (handled below by setting entries_blocked=True)
         entries_blocked = True
+        _notify(f"🚨 <b>KILL SWITCH</b>\n{kill_status}")
     else:
         entries_blocked = False
 
@@ -375,6 +381,11 @@ def run_daily(
                     )
                     if order and not dry_run:
                         orders_placed += 1
+                        _notify(
+                            f"📉 <b>EXIT</b> {ticker}\n"
+                            f"Reason: {reason}\n"
+                            f"P&amp;L: ${pos.unrealized_pl:+.2f} ({pos.unrealized_plpc*100:+.1f}%)"
+                        )
                     actions.append({"action": "exit", "ticker": ticker, "reason": reason, "dry_run": dry_run})
                 except Exception as exc:
                     ks.mark_broker_error()
@@ -430,6 +441,8 @@ def run_daily(
                 # iteration sees the correct remaining capital.
                 orders_placed += 1
                 cash_available -= notional
+                if not dry_run:
+                    _notify(f"📈 <b>ENTRY</b> {ticker} | ${notional:,.0f} | Momentum breakout")
                 actions.append({
                     "action": "entry",
                     "ticker": ticker,
@@ -499,5 +512,11 @@ def run_daily(
         dry_run=dry_run,
     )
 
+    _notify(
+        f"📊 <b>EOD {today_str}</b>\n"
+        f"Portfolio: ${account.portfolio_value:,.0f} ({daily_pnl_pct:+.1f}%)\n"
+        f"{len(positions)} positions | Cash: ${account.cash:,.0f}\n"
+        f"Orders: {orders_placed} | KS: {kill_status}"
+    )
     logger.info("=== Daily run complete — %d order(s) placed | report: %s ===",
                 orders_placed, report_path)
