@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -201,6 +202,40 @@ def _rank_by_relative_strength(
     return sorted(rs_scores.keys(), key=lambda t: rs_scores[t], reverse=True)
 
 
+def _update_fill(broker, db, row_id: int, order_id: str, ticker: str) -> None:
+    """Sleep 2 s, fetch actual fill from Alpaca, write price + shares back to DB."""
+    time.sleep(2)
+    try:
+        o = broker.get_order_by_id(order_id)
+        if o.filled_avg_price is not None and o.filled_qty > 0:
+            db.update_decision_fill(row_id, order_id, o.filled_avg_price, o.filled_qty)
+            logger.info("Fill confirmed: %s %.4f sh @ $%.2f", ticker, o.filled_qty, o.filled_avg_price)
+        else:
+            db.update_decision_fill(row_id, order_id, None, None)
+            logger.info("Order %s not yet filled for %s — order_id stored, will reconcile next run", order_id, ticker)
+    except Exception as exc:
+        logger.warning("Could not fetch fill for %s order %s: %s", ticker, order_id, exc)
+
+
+def _reconcile_pending_fills(broker, db) -> None:
+    """At session start: update any decisions from prior runs that have an order_id but no fill price."""
+    since = (date.today() - timedelta(days=3)).isoformat()
+    pending = db.get_pending_fills(since_date=since)
+    if not pending:
+        return
+    logger.info("Reconciling %d unfilled decision(s) from prior sessions", len(pending))
+    for row in pending:
+        try:
+            o = broker.get_order_by_id(row["order_id"])
+            if o.filled_avg_price is not None and o.filled_qty > 0:
+                db.update_decision_fill(row["id"], row["order_id"], o.filled_avg_price, o.filled_qty)
+                logger.info("Reconciled %s: %.4f sh @ $%.2f", row["ticker"], o.filled_qty, o.filled_avg_price)
+            else:
+                logger.info("Order %s (%s) still pending — status=%s", row["order_id"], row["ticker"], o.status)
+        except Exception as exc:
+            logger.warning("Reconcile failed for order %s (%s): %s", row["order_id"], row["ticker"], exc)
+
+
 def run_daily(
     dry_run: bool = False,
     env_path: Optional[Path] = None,
@@ -269,6 +304,8 @@ def run_daily(
     ks = KillSwitches(project_root=_PROJECT_ROOT)
     db = TradingDB()
     order_mgr = OrderManager(broker)
+
+    _reconcile_pending_fills(broker, db)
 
     start_value = db.get_start_of_day_value(today_str) or account.portfolio_value
     peak_value = db.get_peak_value() or account.portfolio_value
@@ -360,7 +397,7 @@ def run_daily(
             if pos is None:
                 continue
 
-            db.log_decision(
+            row_id = db.log_decision(
                 ticker=ticker,
                 action="exit" if should_exit else "hold",
                 reason=reason,
@@ -386,6 +423,7 @@ def run_daily(
                             f"Reason: {reason}\n"
                             f"P&amp;L: ${pos.unrealized_pl:+.2f} ({pos.unrealized_plpc*100:+.1f}%)"
                         )
+                        _update_fill(broker, db, row_id, order.order_id, ticker)
                     actions.append({"action": "exit", "ticker": ticker, "reason": reason, "dry_run": dry_run})
                 except Exception as exc:
                     ks.mark_broker_error()
@@ -422,7 +460,7 @@ def run_daily(
                 logger.info("Insufficient cash for more entries — stopping at %d", orders_placed)
                 break
 
-            db.log_decision(
+            row_id = db.log_decision(
                 ticker=ticker,
                 action="entry",
                 reason="momentum_breakout",
@@ -441,8 +479,9 @@ def run_daily(
                 # iteration sees the correct remaining capital.
                 orders_placed += 1
                 cash_available -= notional
-                if not dry_run:
+                if order and not dry_run:
                     _notify(f"📈 <b>ENTRY</b> {ticker} | ${notional:,.0f} | Momentum breakout")
+                    _update_fill(broker, db, row_id, order.order_id, ticker)
                 actions.append({
                     "action": "entry",
                     "ticker": ticker,

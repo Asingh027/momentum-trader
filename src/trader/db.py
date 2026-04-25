@@ -116,9 +116,9 @@ class TradingDB:
         portfolio_value: Optional[float] = None,
         order_id: Optional[str] = None,
         dry_run: bool = False,
-    ) -> None:
+    ) -> int:
         with self._conn() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO decisions
                    (timestamp, ticker, action, reason, price, shares, notional, portfolio_value, order_id, dry_run)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -130,6 +130,32 @@ class TradingDB:
                     1 if dry_run else 0,
                 ),
             )
+            return cursor.lastrowid
+
+    def update_decision_fill(
+        self,
+        row_id: int,
+        order_id: str,
+        price: Optional[float],
+        shares: Optional[float],
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE decisions SET order_id=?, price=?, shares=? WHERE id=?",
+                (order_id, price, shares, row_id),
+            )
+
+    def get_pending_fills(self, since_date: str) -> list[dict]:
+        """Return live (non-dry-run) decisions with an order_id but no fill price yet."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT id, ticker, order_id FROM decisions
+                   WHERE order_id IS NOT NULL AND price IS NULL
+                     AND dry_run = 0 AND timestamp >= ?
+                   ORDER BY timestamp""",
+                (since_date,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── Daily Summary ─────────────────────────────────────────────────────────
 

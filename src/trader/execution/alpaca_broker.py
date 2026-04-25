@@ -140,6 +140,11 @@ class AlpacaBroker(BrokerProtocol):
         return self._to_order(order)
 
     @_retry
+    def get_order_by_id(self, order_id: str) -> Order:
+        order = self._trading.get_order_by_id(order_id)
+        return self._to_order(order)
+
+    @_retry
     def get_open_orders(self, symbol: Optional[str] = None) -> list[Order]:
         req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol] if symbol else None)
         orders = self._trading.get_orders(req)

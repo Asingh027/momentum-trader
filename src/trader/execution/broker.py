@@ -80,6 +80,10 @@ class BrokerProtocol(ABC):
         """
 
     @abstractmethod
+    def get_order_by_id(self, order_id: str) -> Order:
+        """Return a single order by its ID (includes fill price/qty after execution)."""
+
+    @abstractmethod
     def get_open_orders(self, symbol: Optional[str] = None) -> list[Order]:
         """Return all open (pending) orders. Optionally filter by symbol."""
 
