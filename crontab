@@ -2,8 +2,14 @@
 # TZ=America/New_York is set in the Dockerfile, so all times below are ET.
 # % must be escaped as \% in crontab (standard cron convention).
 
-# EOD run — 4:30 PM ET weekdays (exits + entries, writes daily report) — max 10 min
-30 16 * * 1-5 mkdir -p /data/task_logs && cd /app && timeout 600 uv run python scripts/run_trading.py >> /data/task_logs/eod_$(date +\%Y\%m\%d).log 2>&1
+# Paper EOD — 4:30 PM ET weekdays (exits + entries, writes daily report) — max 10 min
+30 16 * * 1-5 mkdir -p /data/task_logs && cd /app && timeout 600 uv run python scripts/run_trading.py >> /data/task_logs/eod_paper_$(date +\%Y\%m\%d).log 2>&1
 
-# Intraday monitor — hourly 10:30–15:30 ET weekdays (hard stops + regime gate only, no entries) — max 5 min
-30 10-15 * * 1-5 mkdir -p /data/task_logs && cd /app && timeout 300 uv run python scripts/run_trading.py --monitor-only >> /data/task_logs/monitor_$(date +\%Y\%m\%d_\%H\%M).log 2>&1
+# Live EOD — 4:35 PM ET weekdays — max 10 min
+35 16 * * 1-5 mkdir -p /data/task_logs && cd /app && timeout 600 uv run python scripts/run_trading.py --live >> /data/task_logs/eod_live_$(date +\%Y\%m\%d).log 2>&1
+
+# Paper monitor — hourly 10:30–15:30 ET weekdays — max 5 min
+30 10-15 * * 1-5 mkdir -p /data/task_logs && cd /app && timeout 300 uv run python scripts/run_trading.py --monitor-only >> /data/task_logs/monitor_paper_$(date +\%Y\%m\%d_\%H\%M).log 2>&1
+
+# Live monitor — hourly 10:35–15:35 ET weekdays — max 5 min
+35 10-15 * * 1-5 mkdir -p /data/task_logs && cd /app && timeout 300 uv run python scripts/run_trading.py --live --monitor-only >> /data/task_logs/monitor_live_$(date +\%Y\%m\%d_\%H\%M).log 2>&1

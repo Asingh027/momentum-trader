@@ -78,10 +78,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Resolve env file: explicit --env-file wins; else live vs paper default
+    # Resolve env file: explicit --env-file wins; else env var; else OS default path
+    import os
     env_file = args.env_file
     if env_file is None and args.live:
-        env_file = Path(r"C:\Users\Avneet\Documents\Trading Helper\alpaca_live.env")
+        _live_env_var = os.environ.get("ALPACA_LIVE_ENV_PATH", "")
+        env_file = (
+            Path(_live_env_var) if _live_env_var.strip()
+            else Path(r"C:\Users\Avneet\Documents\Trading Helper\alpaca_live.env")
+        )
 
     if args.monitor_only:
         from trader.monitor import run_intraday_monitor

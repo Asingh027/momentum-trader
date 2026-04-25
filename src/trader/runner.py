@@ -267,6 +267,7 @@ def run_daily(
 
     # ── 1. Credentials + connection ────────────────────────────────────────
     mode_tag = ("LIVE" if live else "PAPER") + (" [DRY RUN]" if dry_run else "")
+    tag = "[LIVE]" if live else "[PAPER]"
     logger.info("=== Trading Runner — %s | %s ===", today_str, mode_tag)
     logger.info("Broker endpoint: %s", "api.alpaca.markets" if live else "paper-api.alpaca.markets")
     try:
@@ -333,7 +334,7 @@ def run_daily(
         # Continue to process exits even when kill switch is tripped
         # but block new entries (handled below by setting entries_blocked=True)
         entries_blocked = True
-        _notify(f"🚨 <b>KILL SWITCH</b>\n{kill_status}")
+        _notify(f"🚨 {tag} <b>KILL SWITCH</b>\n{kill_status}")
     else:
         entries_blocked = False
 
@@ -425,7 +426,7 @@ def run_daily(
                     if order and not dry_run:
                         orders_placed += 1
                         _notify(
-                            f"📉 <b>EXIT</b> {ticker}\n"
+                            f"📉 {tag} <b>EXIT</b> {ticker}\n"
                             f"Reason: {reason}\n"
                             f"P&amp;L: ${pos.unrealized_pl:+.2f} ({pos.unrealized_plpc*100:+.1f}%)"
                         )
@@ -486,7 +487,7 @@ def run_daily(
                 orders_placed += 1
                 cash_available -= notional
                 if order and not dry_run:
-                    _notify(f"📈 <b>ENTRY</b> {ticker} | ${notional:,.0f} | Momentum breakout")
+                    _notify(f"📈 {tag} <b>ENTRY</b> {ticker} | ${notional:,.0f} | Momentum breakout")
                     _update_fill(broker, db, row_id, order.order_id, ticker)
                 actions.append({
                     "action": "entry",
@@ -558,7 +559,7 @@ def run_daily(
     )
 
     _notify(
-        f"📊 <b>EOD {today_str}</b>\n"
+        f"📊 {tag} <b>EOD {today_str}</b>\n"
         f"Portfolio: ${account.portfolio_value:,.0f} ({daily_pnl_pct:+.1f}%)\n"
         f"{len(positions)} positions | Cash: ${account.cash:,.0f}\n"
         f"Orders: {orders_placed} | KS: {kill_status}"
