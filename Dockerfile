@@ -16,13 +16,14 @@ RUN apt-get update \
 WORKDIR /app
 
 # ── Dependencies (cached layer — only rebuilt when lock file changes) ──────────
-COPY pyproject.toml uv.lock ./
+COPY trader/pyproject.toml trader/uv.lock ./
+COPY notify/ /notify/
 RUN uv sync --frozen --no-dev --no-install-project
 
 # ── Source code (separate layer — dep cache survives code-only changes) ────────
-COPY src/     ./src/
-COPY scripts/ ./scripts/
-COPY crontab  /app/crontab
+COPY trader/src/     ./src/
+COPY trader/scripts/ ./scripts/
+COPY trader/crontab  /app/crontab
 RUN uv sync --frozen --no-dev
 
 # ── Runtime defaults (overridden by docker-compose environment block) ─────────
