@@ -240,6 +240,7 @@ def run_daily(
     dry_run: bool = False,
     env_path: Optional[Path] = None,
     status_only: bool = False,
+    live: bool = False,
 ) -> None:
     """Main daily execution function.
 
@@ -265,7 +266,9 @@ def run_daily(
     today_str = today.isoformat()
 
     # ── 1. Credentials + connection ────────────────────────────────────────
-    logger.info("=== Trading Runner — %s%s ===", today_str, " [DRY RUN]" if dry_run else "")
+    mode_tag = ("LIVE" if live else "PAPER") + (" [DRY RUN]" if dry_run else "")
+    logger.info("=== Trading Runner — %s | %s ===", today_str, mode_tag)
+    logger.info("Broker endpoint: %s", "api.alpaca.markets" if live else "paper-api.alpaca.markets")
     try:
         creds = load_credentials(env_path)
     except (FileNotFoundError, ValueError) as exc:
@@ -275,7 +278,7 @@ def run_daily(
     broker = AlpacaBroker(
         api_key=creds["ALPACA_KEY_ID"],
         secret_key=creds["ALPACA_SECRET_KEY"],
-        paper=True,
+        paper=not live,
     )
 
     # ── 2. Auth verification ───────────────────────────────────────────────
@@ -302,7 +305,10 @@ def run_daily(
 
     # ── 3. Kill switches ───────────────────────────────────────────────────
     ks = KillSwitches(project_root=_PROJECT_ROOT)
-    db = TradingDB()
+    # Live mode uses a separate DB so paper history doesn't corrupt kill-switch math
+    from trader.db import get_db_path
+    live_db_path = get_db_path().parent / "trader_live.db" if live else None
+    db = TradingDB(db_path=live_db_path)
     order_mgr = OrderManager(broker)
 
     _reconcile_pending_fills(broker, db)

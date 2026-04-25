@@ -124,6 +124,7 @@ def compute_spy_sma200(spy_bars: pd.DataFrame) -> Optional[float]:
 def run_intraday_monitor(
     dry_run: bool = False,
     env_path: Optional[Path] = None,
+    live: bool = False,
 ) -> None:
     """Intraday risk-only monitor. Checks stops and regime; never places entries.
 
@@ -142,10 +143,11 @@ def run_intraday_monitor(
         logger.critical("Monitor: failed to load credentials: %s", exc)
         sys.exit(1)
 
+    logger.info("Monitor endpoint: %s", "api.alpaca.markets" if live else "paper-api.alpaca.markets")
     broker = AlpacaBroker(
         api_key=creds["ALPACA_KEY_ID"],
         secret_key=creds["ALPACA_SECRET_KEY"],
-        paper=True,
+        paper=not live,
     )
 
     # ── 2. Auth ────────────────────────────────────────────────────────────
@@ -157,7 +159,9 @@ def run_intraday_monitor(
 
     # ── 3. Kill switches ───────────────────────────────────────────────────
     ks = KillSwitches(project_root=_PROJECT_ROOT)
-    db = TradingDB()
+    from trader.db import get_db_path
+    live_db_path = get_db_path().parent / "trader_live.db" if live else None
+    db = TradingDB(db_path=live_db_path)
     order_mgr = OrderManager(broker)
 
     start_value = db.get_start_of_day_value(today_str) or account.portfolio_value

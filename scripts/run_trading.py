@@ -15,7 +15,8 @@ Modes:
     --status         Account snapshot only; exits immediately.
 
 Credentials are read from:
-    C:\\Users\\Avneet\\Documents\\Trading Helper\\alpaca.env
+    C:\\Users\\Avneet\\Documents\\Trading Helper\\alpaca.env  (paper, default)
+    C:\\Users\\Avneet\\Documents\\Trading Helper\\alpaca_live.env  (live, with --live)
 Override with: --env-file /path/to/other.env
 """
 
@@ -61,6 +62,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "Trade against the LIVE Alpaca account (api.alpaca.markets). "
+            "Default is paper (paper-api.alpaca.markets). "
+            "Loads alpaca_live.env unless --env-file overrides it."
+        ),
+    )
+    parser.add_argument(
         "--env-file",
         type=Path,
         default=None,
@@ -68,15 +78,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Resolve env file: explicit --env-file wins; else live vs paper default
+    env_file = args.env_file
+    if env_file is None and args.live:
+        env_file = Path(r"C:\Users\Avneet\Documents\Trading Helper\alpaca_live.env")
+
     if args.monitor_only:
         from trader.monitor import run_intraday_monitor
-        run_intraday_monitor(dry_run=args.dry_run, env_path=args.env_file)
+        run_intraday_monitor(dry_run=args.dry_run, env_path=env_file, live=args.live)
     else:
         from trader.runner import run_daily
         run_daily(
             dry_run=args.dry_run,
-            env_path=args.env_file,
+            env_path=env_file,
             status_only=args.status,
+            live=args.live,
         )
 
 
