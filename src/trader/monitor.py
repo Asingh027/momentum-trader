@@ -35,15 +35,25 @@ from trader.config import TradingConfig
 from trader.db import TradingDB
 from trader.execution.alpaca_broker import AlpacaBroker
 from trader.execution.order_manager import OrderManager
+from trader.risk.exits import atr_stop_pct, compute_atr, trailing_lock_price
 from trader.risk.kill_switches import KillSwitches, KillSwitchTripped
 from trader.runner import load_credentials, _normalize_bars
 
 logger = logging.getLogger(__name__)
 
 # ── Intraday hard-stop threshold ──────────────────────────────────────────────
-# Tighter than the EOD 8% stop — fires on real-time price to protect against
-# intraday breakdowns before the 4:30 PM daily run can act.
+# Legacy fixed-stop fraction, kept for backward compatibility in tests and as
+# the fallback when ATR can't be computed (insufficient bars for a new symbol).
 INTRADAY_HARD_STOP_PCT = 0.05   # -5% from avg entry price
+
+# ── ATR-based stop bounds ────────────────────────────────────────────────────
+ATR_PERIOD = 14
+ATR_STOP_FLOOR = 0.05
+ATR_STOP_CAP = 0.12
+
+# ── Trailing-lock parameters ─────────────────────────────────────────────────
+TRAILING_LOCK_RATIO = 0.5
+TRAILING_ACTIVATION_PCT = 0.15
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _SPY_SMA_CACHE_FILENAME = "spy_sma200_cache.json"
@@ -55,6 +65,7 @@ def check_hard_stops(
     positions: list,
     current_prices: dict[str, float],
     hard_stop_pct: float = INTRADAY_HARD_STOP_PCT,
+    per_ticker_stop_pct: Optional[dict[str, float]] = None,
 ) -> list[tuple]:
     """Return (position, reason) for each position that breached the intraday hard stop.
 
@@ -63,22 +74,107 @@ def check_hard_stops(
     positions : list of Position dataclass instances
     current_prices : dict of symbol -> current price
     hard_stop_pct : float
-        Fraction below avg_entry_price that triggers the stop (e.g. 0.05 = -5%).
+        Default fraction below avg_entry_price that triggers the stop (e.g. 0.05 = -5%).
+        Used when `per_ticker_stop_pct` lacks an entry for a symbol.
+    per_ticker_stop_pct : dict, optional
+        Override stop fraction per ticker (typically ATR-derived). Each value is
+        the fraction below entry that fires the stop (e.g. {"NVDA": 0.09}).
     """
+    per_ticker_stop_pct = per_ticker_stop_pct or {}
     exits = []
     for pos in positions:
         price = current_prices.get(pos.symbol)
         if price is None:
             logger.debug("No current price for %s — skipping hard stop check", pos.symbol)
             continue
+        stop = per_ticker_stop_pct.get(pos.symbol, hard_stop_pct)
         pl_pct = (price - pos.avg_entry_price) / pos.avg_entry_price
-        if pl_pct <= -hard_stop_pct:
+        if pl_pct <= -stop:
             logger.info(
-                "Hard stop fired: %s — current $%.2f vs entry $%.2f (%.1f%%)",
-                pos.symbol, price, pos.avg_entry_price, pl_pct * 100,
+                "Hard stop fired: %s — current $%.2f vs entry $%.2f (%.1f%%, stop=%.1f%%)",
+                pos.symbol, price, pos.avg_entry_price, pl_pct * 100, stop * 100,
             )
             exits.append((pos, "intraday_hard_stop"))
     return exits
+
+
+def check_trailing_locks(
+    positions: list,
+    current_prices: dict[str, float],
+    peaks: dict[str, dict],
+    lock_ratio: float = TRAILING_LOCK_RATIO,
+    activation_pct: float = TRAILING_ACTIVATION_PCT,
+) -> list[tuple]:
+    """Return (position, reason) for each position that breached its trailing lock.
+
+    A position is in a trailing lock once its peak unrealized gain has exceeded
+    `activation_pct`. After that, the stop is `lock_ratio * peak` above entry —
+    e.g. peak +30%, ratio 0.5 → stop locks in +15%.
+
+    Parameters
+    ----------
+    peaks : dict
+        ticker -> dict with at least {'peak_pct': float, 'entry_price': float}.
+        Pulled from the position_peaks table.
+    """
+    exits = []
+    for pos in positions:
+        price = current_prices.get(pos.symbol)
+        if price is None:
+            continue
+        peak = peaks.get(pos.symbol)
+        if peak is None:
+            continue
+        entry_price = peak.get("entry_price")
+        peak_pct = peak.get("peak_pct")
+        if not isinstance(entry_price, (int, float)) or not isinstance(peak_pct, (int, float)):
+            continue
+        lock = trailing_lock_price(
+            entry_price=entry_price,
+            peak_pct=peak_pct,
+            lock_ratio=lock_ratio,
+            activation_pct=activation_pct,
+        )
+        if lock is None:
+            continue
+        if price <= lock:
+            logger.info(
+                "Trailing lock fired: %s — current $%.2f <= lock $%.2f (peak +%.1f%%)",
+                pos.symbol, price, lock, peak_pct * 100,
+            )
+            exits.append((pos, "trailing_lock"))
+    return exits
+
+
+def compute_atr_stops(
+    bars: dict[str, pd.DataFrame],
+    current_prices: dict[str, float],
+    period: int = ATR_PERIOD,
+    floor: float = ATR_STOP_FLOOR,
+    cap: float = ATR_STOP_CAP,
+) -> dict[str, float]:
+    """Compute the ATR-based stop fraction for each ticker with sufficient bars.
+
+    Returns a dict ticker -> stop_pct (fraction). Tickers without enough history
+    are omitted; callers should fall back to `INTRADAY_HARD_STOP_PCT` for them.
+    """
+    out: dict[str, float] = {}
+    for ticker, df in bars.items():
+        if df.empty or not {"High", "Low", "Close"}.issubset(df.columns):
+            continue
+        close_now = current_prices.get(ticker)
+        if close_now is None:
+            close_now = float(df["Close"].iloc[-1])
+        atr = compute_atr(
+            highs=df["High"].tolist(),
+            lows=df["Low"].tolist(),
+            closes=df["Close"].tolist(),
+            period=period,
+        )
+        if atr is None:
+            continue
+        out[ticker] = atr_stop_pct(atr=atr, close=close_now, floor=floor, cap=cap)
+    return out
 
 
 def check_regime_gate(spy_price: float, spy_sma200: float) -> bool:
@@ -248,6 +344,40 @@ def run_intraday_monitor(
         logger.error("Monitor: failed to fetch quotes: %s", exc)
         return
 
+    # ── 7b. Per-ticker ATR stops (fetch ~30 daily bars for held symbols) ──
+    atr_stops: dict[str, float] = {}
+    try:
+        bar_start = (pd.Timestamp(today_str) - pd.Timedelta(days=45)).strftime("%Y-%m-%d")
+        held_bars_raw = broker.get_bars(symbols=held_symbols, start=bar_start, end=today_str)
+        ks.mark_broker_success()
+        held_bars = _normalize_bars(held_bars_raw)
+        atr_stops = compute_atr_stops(held_bars, current_prices)
+        if atr_stops:
+            logger.info(
+                "Monitor: ATR stops — %s",
+                {s: f"{p*100:.1f}%" for s, p in atr_stops.items()},
+            )
+    except Exception as exc:
+        ks.mark_broker_error()
+        logger.warning("Monitor: ATR stop fetch failed (%s) — falling back to fixed %.1f%% stop",
+                       exc, INTRADAY_HARD_STOP_PCT * 100)
+
+    # ── 7c. Update peaks from current prices ───────────────────────────────
+    peaks: dict[str, dict] = {}
+    for pos in positions:
+        price = current_prices.get(pos.symbol)
+        if price is None or pos.avg_entry_price <= 0:
+            continue
+        current_gain = (price - pos.avg_entry_price) / pos.avg_entry_price
+        db.upsert_peak(
+            ticker=pos.symbol,
+            peak_pct=max(current_gain, 0.0),
+            entry_price=pos.avg_entry_price,
+        )
+        peak_row = db.get_peak(pos.symbol)
+        if peak_row is not None:
+            peaks[pos.symbol] = peak_row
+
     # ── 8. Regime gate check ───────────────────────────────────────────────
     exits_to_make: list[tuple] = []  # (position, reason)
 
@@ -263,10 +393,20 @@ def run_intraday_monitor(
             for pos in positions:
                 exits_to_make.append((pos, "intraday_regime_stop"))
 
-    # ── 9. Hard stop checks (skip if regime already exiting everything) ────
+    # ── 9. Hard stop + trailing lock checks (skip if regime exiting all) ──
     if not regime_fired:
-        hard_stop_exits = check_hard_stops(positions, current_prices, INTRADAY_HARD_STOP_PCT)
+        hard_stop_exits = check_hard_stops(
+            positions, current_prices,
+            hard_stop_pct=INTRADAY_HARD_STOP_PCT,
+            per_ticker_stop_pct=atr_stops,
+        )
         exits_to_make.extend(hard_stop_exits)
+
+        # Trailing-lock only fires for positions not already flagged by hard stop
+        already_exiting = {p.symbol for p, _ in exits_to_make}
+        survivors = [p for p in positions if p.symbol not in already_exiting]
+        trailing_exits = check_trailing_locks(survivors, current_prices, peaks)
+        exits_to_make.extend(trailing_exits)
 
     # ── 10. Nothing fired? Exit silently ──────────────────────────────────
     if not exits_to_make and not kill_tripped:
@@ -311,6 +451,7 @@ def run_intraday_monitor(
             )
             if not dry_run:
                 orders_placed += 1
+                db.clear_peak(pos.symbol)
         except Exception as exc:
             ks.mark_broker_error()
             logger.error("Monitor: failed to submit exit for %s: %s", pos.symbol, exc)

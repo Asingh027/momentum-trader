@@ -27,6 +27,17 @@ from typing import Optional
 
 import pandas as pd
 
+from trader.risk.exits import (
+    is_in_cooldown,
+    next_partial_milestone,
+    trailing_lock_price,
+)
+
+TRAILING_LOCK_RATIO = 0.5
+TRAILING_ACTIVATION_PCT = 0.15
+PARTIAL_MILESTONES = [(0.25, 1 / 3), (0.50, 1 / 3)]
+COOLDOWN_TRADING_DAYS = 5
+
 try:
     from notify import send as _notify
 except ImportError:
@@ -404,39 +415,122 @@ def run_daily(
             if pos is None:
                 continue
 
+            # Refresh peak from today's close before evaluating trailing lock /
+            # milestones — ensures we don't act on stale peaks.
+            current_gain = pos.unrealized_plpc
+            db.upsert_peak(
+                ticker=ticker,
+                peak_pct=max(current_gain, 0.0),
+                entry_price=pos.avg_entry_price,
+            )
+            peak_row = db.get_peak(ticker) or {}
+            peak_pct = peak_row.get("peak_pct", max(current_gain, 0.0))
+            sold_milestones = peak_row.get("partial_sold_at", [])
+
+            # Trailing-lock fires as a full exit (overrides SMA exit).
+            lock_price = trailing_lock_price(
+                entry_price=pos.avg_entry_price,
+                peak_pct=peak_pct,
+                lock_ratio=TRAILING_LOCK_RATIO,
+                activation_pct=TRAILING_ACTIVATION_PCT,
+            )
+            trailing_lock_breached = (
+                lock_price is not None and pos.current_price <= lock_price
+            )
+
+            full_exit = should_exit or trailing_lock_breached
+            final_reason = (
+                "trailing_lock" if trailing_lock_breached and not should_exit else reason
+            )
+
             row_id = db.log_decision(
                 ticker=ticker,
-                action="exit" if should_exit else "hold",
-                reason=reason,
+                action="exit" if full_exit else "hold",
+                reason=final_reason,
                 price=pos.current_price,
                 shares=pos.qty,
                 portfolio_value=account.portfolio_value,
                 dry_run=dry_run,
             )
 
-            if should_exit:
-                logger.info("Exit signal: %s — %s", ticker, reason)
+            if full_exit:
+                logger.info("Exit signal: %s — %s", ticker, final_reason)
                 try:
                     order = order_mgr.place_exit_order(
                         symbol=ticker,
                         qty=pos.qty,
-                        reason=reason,
+                        reason=final_reason,
                         dry_run=dry_run,
                     )
                     if order and not dry_run:
                         orders_placed += 1
+                        db.clear_peak(ticker)
                         _notify(
                             f"📉 {tag} <b>EXIT</b> {ticker}\n"
-                            f"Reason: {reason}\n"
+                            f"Reason: {final_reason}\n"
                             f"P&amp;L: ${pos.unrealized_pl:+.2f} ({pos.unrealized_plpc*100:+.1f}%)"
                         )
                         _update_fill(broker, db, row_id, order.order_id, ticker)
-                    actions.append({"action": "exit", "ticker": ticker, "reason": reason, "dry_run": dry_run})
+                    actions.append({"action": "exit", "ticker": ticker, "reason": final_reason, "dry_run": dry_run})
                 except Exception as exc:
                     ks.mark_broker_error()
                     logger.error("Failed to submit exit for %s: %s", ticker, exc)
+                continue
+
+            # Not exiting fully — check partial profit milestones.
+            milestone = next_partial_milestone(
+                current_gain_pct=current_gain,
+                sold_milestones=sold_milestones,
+                milestones=PARTIAL_MILESTONES,
+            )
+            if milestone is not None:
+                threshold, fraction = milestone
+                sell_qty = pos.qty * fraction
+                partial_reason = f"partial_profit_{int(threshold*100)}pct"
+                logger.info(
+                    "Partial profit: %s — selling %.4f sh (%.0f%%) at +%.1f%% gain",
+                    ticker, sell_qty, fraction * 100, current_gain * 100,
+                )
+                partial_row = db.log_decision(
+                    ticker=ticker,
+                    action="exit",
+                    reason=partial_reason,
+                    price=pos.current_price,
+                    shares=sell_qty,
+                    portfolio_value=account.portfolio_value,
+                    dry_run=dry_run,
+                )
+                try:
+                    order = order_mgr.place_exit_order(
+                        symbol=ticker,
+                        qty=sell_qty,
+                        reason=partial_reason,
+                        dry_run=dry_run,
+                    )
+                    if order and not dry_run:
+                        orders_placed += 1
+                        db.upsert_peak(
+                            ticker=ticker,
+                            peak_pct=peak_pct,
+                            entry_price=pos.avg_entry_price,
+                            partial_sold_at=sorted(set(sold_milestones) | {threshold}),
+                        )
+                        _notify(
+                            f"💰 {tag} <b>PARTIAL</b> {ticker}\n"
+                            f"Sold {fraction*100:.0f}% at +{current_gain*100:.1f}% (milestone +{threshold*100:.0f}%)"
+                        )
+                        _update_fill(broker, db, partial_row, order.order_id, ticker)
+                    actions.append({
+                        "action": "exit",
+                        "ticker": ticker,
+                        "reason": partial_reason,
+                        "dry_run": dry_run,
+                    })
+                except Exception as exc:
+                    ks.mark_broker_error()
+                    logger.error("Failed to submit partial exit for %s: %s", ticker, exc)
             else:
-                logger.info("Hold: %s — %s", ticker, reason)
+                logger.info("Hold: %s — %s", ticker, final_reason)
                 actions.append({"action": "hold", "ticker": ticker, "reason": "continuing trend"})
 
     # ── 7. Entry signals ───────────────────────────────────────────────────
@@ -450,6 +544,23 @@ def run_daily(
 
         # Rank by relative strength
         ranked = _rank_by_relative_strength(entry_signals, bars, spy_bars, cfg.relative_strength_lookback)
+
+        # Filter out tickers in post-stop cooldown
+        cooled = []
+        for ticker in ranked:
+            last_stop = db.get_last_stop_exit_date(ticker)
+            if is_in_cooldown(ticker, last_stop, cooldown_days=COOLDOWN_TRADING_DAYS, today=today):
+                logger.info("Cooldown: skipping %s — last stop on %s", ticker, last_stop)
+                db.log_decision(
+                    ticker=ticker,
+                    action="skip",
+                    reason="cooldown_post_stop",
+                    portfolio_value=account.portfolio_value,
+                    dry_run=dry_run,
+                )
+                continue
+            cooled.append(ticker)
+        ranked = cooled
 
         # Determine how many new positions we can open
         current_positions = len(held_tickers)
@@ -489,6 +600,14 @@ def run_daily(
                 if order and not dry_run:
                     _notify(f"📈 {tag} <b>ENTRY</b> {ticker} | ${notional:,.0f} | Momentum breakout")
                     _update_fill(broker, db, row_id, order.order_id, ticker)
+                    # Seed a fresh peak record at gain=0 so partials/trailing
+                    # logic has an entry_price to anchor against on the next run.
+                    db.clear_peak(ticker)
+                    db.upsert_peak(
+                        ticker=ticker,
+                        peak_pct=0.0,
+                        entry_price=None,  # entry price fills in on next monitor/runner pass
+                    )
                 actions.append({
                     "action": "entry",
                     "ticker": ticker,
